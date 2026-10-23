@@ -1,0 +1,1038 @@
+---
+title: 'time series part 2'
+author: 'me'
+format:
+    pdf:
+        toc: true
+        margins:
+        documentclass: article
+---
+
+# **ENV SETUP IMPORTANT TO RUN ONCE**
+
+**needs v2tx.csv file in working directory to import properly**
+
+```{r}
+install.packages(c("eurostat", "ecb", "quantmod", "sandwich", "lmtest", 'readr', 'patchwork', 'car'))
+install.packages(
+  c("dplyr", "tidyr", "lubridate"),
+  repos = "https://cloud.r-project.org"
+)
+
+library(car); library(lmtest); library(ggplot2); library(patchwork); library(eurostat); library(ecb); library(quantmod); library(dplyr); library(tidyr); library(lubridate); library(eurostat); library(patchwork); library(readr); clean_eurostat_cache()
+```
+
+
+## MPS IMPORT
+
+
+```{r}
+mps <- read.csv("../mps.csv")
+
+monthly_mps <- mps %>%
+  mutate(month = floor_date(as.Date(date), "month")) %>%
+  group_by(month) %>%
+  summarise(
+    unstandardized = sum(as.numeric(unstandardized), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  complete(
+    month = seq.Date(min(month), max(month), by = "month"),
+    fill = list(unstandardized = 0)
+  ) %>%
+  mutate(
+    month_date = month,
+    month = format(month, "%Y-%m")
+  )
+
+cat('Length of monthly_mps: \n')
+print(nrow(monthly_mps))
+
+cat('sample period \n')
+cat(strrep('*', 50), '\n')
+cat('start period of sample: ', as.character(monthly_mps$month[1], '\n'))
+cat('end period of sample: ', as.character(tail(monthly_mps$month,1), '\n'))
+
+# append numeric cols to this list for simple plotting
+numeric_cols <- monthly_mps[, sapply(monthly_mps, is.numeric), drop = FALSE]
+
+# grabbed from last notebook
+simple_summary <- sapply(numeric_cols, function(x) c(
+  Mean = mean(x, na.rm = TRUE),
+  Std_Dev = sd(x, na.rm = TRUE),
+  Min = min(x, na.rm = TRUE),
+  Max = max(x, na.rm = TRUE)
+))
+
+simple_summary
+
+# plot
+plot(
+  x = monthly_mps$month_date,
+  y = monthly_mps$unstandardized,
+  type='l',
+  main = 'monthly mps',
+  xlab = 'time (months)',
+  ylab = 'mps (unstandardized)',
+  col = 'peachpuff',
+  lwd=1
+)
+
+```
+## REST OF DATASET IMPORTS AND READS
+
+
+STOXX from 2007 -> 
+
+```{r}
+
+# hicp from eurostat api
+hicp <- get_eurostat("prc_hicp_manr", filters = list(geo = "EA20", coicop = "CP00"))
+
+# esi using api func.
+esi <- get_eurostat(id = "ei_bssi_m_r2", filters = list(indic = "BS-ESI-I",s_adj = "SA", geo="EA20"), time_format = "date")
+
+if ("time" %in% names(esi)) {
+  esi <- esi %>% arrange(time)
+} else if ("TIME_PERIOD" %in% names(esi)) {
+  esi <- esi %>% arrange(TIME_PERIOD)
+}
+
+# yield curves for 6 different maturities
+mats <- c("3M", "6M", "1Y", "2Y", "5Y", "10Y")
+yc <- lapply(mats, function(m)
+get_data(paste0("YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_", m)))
+
+# stoxx read
+getSymbols("^STOXX50E", from = "2001-09-01", src = "yahoo")
+stoxx <- data.frame(date = index(STOXX50E),
+close = as.numeric(Cl(STOXX50E)))
+
+
+# vstoxx read
+vstoxx_cleaned <- read_delim('h_v2tx.csv', delim = ';', show_col_types = FALSE) %>%
+  transmute(date  = as.Date(Date, format = '%d.%m.%Y'), level = as.numeric(gsub(',', '.', Indexvalue))
+  ) %>%
+  filter(!is.na(date), !is.na(level)) %>%
+  arrange(date)
+
+last_before <- function(dates, values, d) values[max(which(dates < d))]
+
+```
+
+
+## DATA CLEANING
+
+```{r}
+
+hicp_cleaned <- hicp %>%
+  mutate(date = if ('time' %in% names(.)) as.Date(time) else as.Date(TIME_PERIOD)) %>%
+  filter(!is.na(values))
+
+esi_cleaned <- esi %>%
+  mutate(date = if('time' %in% names(.)) as.Date(time) else as.Date(TIME_PERIOD), esi = as.numeric(values)
+  ) %>%
+  filter(!is.na(date), !is.na(esi)) %>%
+  select(date, esi) %>%
+  arrange(date)
+
+names(yc) <- mats
+yc_df <- bind_rows(lapply(names(yc), function(x) {
+  df <- yc[[x]]
+  df$maturity <- x
+  df
+})) %>%
+  mutate(date = as.Date(obstime), maturity = factor(maturity, levels = mats)
+  ) %>%
+    filter(!is.na(obsvalue))
+
+stoxx_cleaned <- stoxx %>%
+  mutate(date = as.Date(date)) %>%
+  filter(!is.na(date), !is.na(close)) %>%
+  select(date, close) %>%
+  arrange(date)
+
+```
+
+## PLOTS
+
+```{r}
+
+
+y_col_hicp <- if ('values' %in% names(hicp_cleaned)) 'values' else 'value'
+
+hicp_plot <- ggplot(hicp_cleaned, aes(x=date, y=.data[[y_col_hicp]])) +
+  geom_line(color='darkorange', linewidth=0.8) +
+  geom_hline(yintercept=2, linetype='dashed', color='peachpuff') +
+  labs(
+    title='EA HICP Annual Inflation',
+    subtitle='All items in EA20, annual % change (∆)',
+    x = 'Date',
+    y = '%') +
+  theme_minimal()
+
+y_col_esi <- if ("values" %in% names(esi_cleaned)) "values" else if ("esi" %in% names(esi_cleaned)) "esi" else "value"
+
+esi_plot <- ggplot(esi_cleaned, aes(x=date, y=.data[[y_col_esi]])) +
+  geom_line(color='darkorange', linewidth=0.8) +
+  geom_hline(yintercept=100, linetype='dashed', color='peachpuff') +
+  labs(
+    title='EA Economic Sentiment Indicator (ESI)',
+    subtitle='Long-Term Average = 100',
+    x='Date',
+    y='Index'
+    ) +
+    theme_minimal()
+
+stoxx_plot <- ggplot(stoxx_cleaned, aes(x=date, y=close)) +
+  geom_line(color='darkorange', linewidth=0.7) +
+  labs(
+    title = 'EURO STOXX 50 INDEX',
+    subtitle = 'Daily Closing Level',
+    x='Date',
+    y='Points'
+  ) +
+    theme_minimal()
+
+vstoxx_plot <- ggplot(vstoxx_cleaned, aes(x=date, y=level)) + 
+  geom_line(color='darkorange', linewidth=0.7) + 
+  labs(
+    title='VSTOXX Volatility Index',
+    subtitle='Implied Volatilty (%)',
+    x='Date',
+    y='Index Points'
+  ) + 
+    theme_minimal()
+
+  yc_plot <- ggplot(yc_df, aes(x=date, y=obsvalue, color=maturity)) +
+    geom_line(linewidth=0.7) +
+    labs(
+      title='ECB AAA Spot Yield Curve',
+      subtitle='Daily Rates Across Varying Maturities',
+      x='Date',
+      y='Spot Rate (%)',
+      color='Maturity') +
+      theme_minimal() +
+      theme(legend.position = 'bottom')
+    
+(hicp_plot | esi_plot) / (stoxx_plot | vstoxx_plot) / yc_plot + 
+  plot_layout(heights = c(1, 1, 1.2))
+
+
+
+```
+
+# **(ii) Answer**
+
+We collect five categories of financial and macroeconomic indicators to 
+investigate whether euro-area monetary policy surprises can be predicted 
+using previously available information.
+
+## EURO STOXX 50
+
+First, we use the EURO STOXX 50 equity index, obtained from Yahoo Finance using the ticker `^STOXX50E`. 
+
+## VSTOXX
+
+Second, we use the VSTOXX implied volatility index (`V2TX`), which measures expected volatility in the EURO STOXX 50 market. 
+
+
+## ESI 
+
+Third, we use the Economic Sentiment Indicator (ESI) for the euro area with 20 member countries. 
+
+This is a seasonally adjusted monthly index, with a long-run reference average of 100.
+
+## Harmonised Index of Consumer Prices
+
+Fourth, we obtain the annual Harmonised Index of Consumer Prices inflation rate from Eurostat dataset `prc_hicp_manr`, selecting all items (`CP00`) for the euro area (`EA20`). The series is observed monthly and measured in percent.
+
+## EURO-AREA AAA Government Bond Rates 
+
+Finally, we use euro-area AAA government bond spot rates obtained from the ECB Data Portal for maturities of three months, six months, one year, two years, five years and ten years. 
+
+These series are observed at daily frequency and measured in percent per annum.
+
+
+## Plots
+
+We plot the original series in levels to examine their historical behaviour before constructing the changes used as regression predictors. 
+
+All analysis is restricted to the January 2002–October 2025 project period, subject to the historical availability of each dataset
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#  **(iii) Construct $z_{t-1}$**. 
+Compute the changes defined in Section 2.2 relative to the reference day $r_t$ 
+of each month. Explain how you deal with weekends and holidays 
+(use the last available trading day before d), 
+and why no predictor uses information from the announcement day or later.
+
+## 3-Month Cutoff FUNCTION
+
+```{r}
+
+# create cutoff
+monthly_mps$cutoff <- monthly_mps$month_date - 1
+
+past_change <- function(data, cutoff, val_col = 'value', h = 63, log_change = FALSE) {
+  cutoff <- as.Date(cutoff)
+  data_sub <- data[data$date <= cutoff & !is.na(data$date), ]
+  data_sub <- data_sub[order(data_sub$date), ]
+  
+  vals <- as.numeric(data_sub[[val_col]])
+  valid_idx <- which(!is.na(vals) & is.finite(vals))
+  
+  if (log_change) {
+    valid_idx <- valid_idx[vals[valid_idx] > 0]
+  }
+  
+  if (length(valid_idx) <= h) {
+    return(NA_real_)
+  }
+  
+  current_idx  <- valid_idx[length(valid_idx)]
+  previous_idx <- valid_idx[length(valid_idx) - h]
+  
+  day_gap <- as.numeric(cutoff - data_sub$date[current_idx])
+  if (day_gap > 7 || day_gap < 0) {
+    return(NA_real_)
+  }
+  
+  if (log_change) {
+    return(log(vals[current_idx]) - log(vals[previous_idx]))
+  }
+  
+  return(vals[current_idx] - vals[previous_idx])
+}
+
+```
+
+### CUTOFF FUNCTION APPLY
+
+
+```{r}
+
+monthly_mps_2007 <- monthly_mps %>%
+  filter(month_date >= as.Date("2007-08-01"))
+
+
+monthly_mps_2007$stoxx_3m <- vapply(
+  seq_len(nrow(monthly_mps_2007)),
+  function(i) {
+    past_change(
+      stoxx_cleaned,
+      cutoff     = monthly_mps_2007$cutoff[i],
+      val_col    = "close",
+      h          = 63,
+      log_change = TRUE
+    )
+  },
+  numeric(1)
+)
+
+monthly_mps_2007$vstoxx_3m <- vapply(
+  seq_len(nrow(monthly_mps_2007)),
+  function(i) {
+    past_change(
+      vstoxx_cleaned,
+      cutoff     = monthly_mps_2007$cutoff[i],
+      val_col    = "level",
+      h          = 63,
+      log_change = FALSE
+    )
+  },
+  numeric(1)
+)
+
+esi_cleaned$month_date <- floor_date(as.Date(esi_cleaned$date), 'month')
+hicp_cleaned$month_date <- floor_date(as.Date(hicp_cleaned$date), 'month')
+
+esi_val_col <- if ('esi' %in% names(esi_cleaned)) 'esi' else 'values'
+hicp_val_col <- if ('values' %in% names(hicp_cleaned)) 'values' else 'value'
+
+monthly_mps_2007$esi_3m <- vapply(
+  monthly_mps_2007$month_date,
+  function(d) {
+    target <- as.Date(d)
+    m1 <- target %m-% months(1)
+    m4 <- target %m-% months(4)
+    
+    x1 <- esi_cleaned[[esi_val_col]][match(m1, esi_cleaned$month_date)]
+    x4 <- esi_cleaned[[esi_val_col]][match(m4, esi_cleaned$month_date)]
+    
+    if (length(x1) == 0 || length(x4) == 0 || is.na(x1) || is.na(x4)) {
+      return(NA_real_)
+    }
+    as.numeric(x1-x4)
+  },
+  numeric(1)
+)
+
+monthly_mps_2007$inflation_3m <- NA_real_
+monthly_mps_2007$inflation_1y <- NA_real_
+
+for (i in seq_len(nrow(monthly_mps_2007))) {
+  d <- as.Date(monthly_mps_2007$month_date[i])
+  
+  m1 <- d %m-% months(1)
+  m4 <- d %m-% months(4)
+  m13 <- d %m-% months(13)
+  
+  pi1 <- hicp_cleaned[[hicp_val_col]][match(m1, hicp_cleaned$month_date)]
+  pi4 <- hicp_cleaned[[hicp_val_col]][match(m4, hicp_cleaned$month_date)]
+  pi13 <- hicp_cleaned[[hicp_val_col]][match(m13, hicp_cleaned$month_date)]
+  
+  if (length(pi1) > 0 && length(pi4) > 0 && !is.na(pi1) && !is.na(pi4)) {
+    monthly_mps_2007$inflation_3m[i] <- as.numeric(pi1-pi4)
+  }
+  
+  if (length(pi1) > 0 && length(pi13) > 0 && !is.na(pi1) && !is.na(pi13)) {
+    monthly_mps_2007$inflation_1y[i] <- as.numeric(pi1 - pi13)
+  }
+}
+
+yield_levels <- yc_df %>%
+  select(date, maturity, obsvalue) %>%
+  pivot_wider(
+    names_from = maturity,
+    values_from = obsvalue
+  ) %>%
+  arrange(date)
+
+yield_levels <- yield_levels[
+  complete.cases(yield_levels[, mats]),
+  c('date', mats)
+]
+
+head(monthly_mps_2007)
+
+```
+
+
+## PCA ON GOVERNMENT BOND YIELD LEVELS
+
+```{r}
+
+yield_pca <- prcomp(
+  yield_levels[, mats],
+  center = TRUE,
+  scale. = FALSE
+)
+
+yield_levels$pc2 <- yield_pca$x[, 2]
+yield_levels$spread <- (
+  yield_levels[["10Y"]] -
+    yield_levels[["3M"]]
+)
+if (
+  cor(
+    yield_levels$pc2,
+    yield_levels$spread
+  ) < 0
+) {
+  yield_levels$pc2 <- -yield_levels$pc2
+}
+
+# Verify the orientation
+cor(
+  yield_levels$pc2,
+  yield_levels$spread
+)
+
+summary(yield_pca)
+```
+
+### WHY PC2? 
+PC1 often captures common changes in the overall level of the yield curve.
+PC2 often captures differences between shorter and longer maturities, corresponding to slope changes.
+Because principal components are identified only up to sign, we orient PC2 to be positively correlated with the ten-year minus three-month yield spread.
+
+
+
+
+
+## CALCULATE THE THREE MONTH PC2 CHANGE
+
+
+```{r}
+pc2_daily <- data.frame(
+  date = yield_levels$date,
+  value = yield_levels$pc2
+)
+
+monthly_mps_2007$yield_pc2_3m <- vapply(
+  seq_len(nrow(monthly_mps_2007)),
+  function(i) {
+    past_change(
+      pc2_daily,
+      cutoff = monthly_mps_2007$cutoff[i],
+      h = 63,
+      log_change = FALSE
+    )
+  },
+  numeric(1)
+)
+
+```
+
+
+
+## PREDICTOR VERIFICATION
+
+```{r}
+
+predictors <- c(
+  "stoxx_3m",
+  "vstoxx_3m",
+  "esi_3m",
+  "inflation_3m",
+  "inflation_1y",
+  "yield_pc2_3m"
+)
+
+# Check the column names
+names(monthly_mps_2007)
+
+# Count valid observations for each predictor
+colSums(
+  !is.na(monthly_mps_2007[, predictors])
+)
+
+# Count missing observations
+colSums(
+  is.na(monthly_mps_2007[, predictors])
+)
+
+# Check the first observations
+head(
+  monthly_mps_2007[, c(
+    "month_date",
+    "unstandardized",
+    predictors
+  )]
+)
+
+# COMMON SAMPLE FOR ALL PREDICTORS
+regression_data <- monthly_mps_2007[
+  complete.cases(  #retains only months for which every predictor and the monetary policy surprise have a valid observation
+    monthly_mps_2007[, c(
+      "unstandardized",
+      predictors
+    )]
+  ),
+]
+
+# Number of months in common
+nrow(regression_data)
+
+# First and last month in common
+range(regression_data$month_date)
+
+# Check missing values
+colSums(
+  is.na(regression_data[, predictors])
+)
+
+# Check whether months are consecutive
+table(
+  diff(regression_data$month_date) > 32
+)
+
+#VERIFY THE FINAL REGRESSION SAMPLE 
+data.frame(
+  Variable = c(
+    "Monthly MPS",
+    predictors
+  ),
+  Valid_Months = c(
+    sum(!is.na(monthly_mps_2007$unstandardized)),
+    colSums(!is.na(monthly_mps_2007[, predictors]))
+  )
+)
+
+cat(
+  "Common regression observations:",
+  nrow(regression_data), "\n"
+)
+
+cat(
+  "Common sample:",
+  as.character(min(regression_data$month_date)),
+  "to",
+  as.character(max(regression_data$month_date)),
+  "\n"
+)
+
+
+```
+
+# **(iii) Answer**
+
+We construct the explanatory variables using changes in financial and macroeconomic
+indicators observed prior to the corresponding ECB monetary policy surprise.
+For the daily financial variables, we adopt the reference-date convention 
+based on the last available trading day of the previous calendar month. 
+This approach accounts for weekends and market holidays and prevents the use 
+of financial observations occurring after the reference cutoff.
+The STOXX and VSTOXX predictors are calculated as three-month logarithmic 
+changes, using approximately 63 trading observations. The ESI predictor 
+is constructed as a three-month difference in economic sentiment, while the 
+inflation predictors measure three-month and twelve-month changes in the annual 
+HICP inflation rate. We also perform unstandardised PCA on the daily levels 
+of six euro-area government bond yields. We retain the second principal component, 
+which captures an important dimension of yield-curve slope movements, and 
+orient it to be positively correlated with the difference between ten-year 
+and three-month government bond yields.The corresponding predictor is calculated 
+as the three-month change in the oriented PC2 score. The original monetary 
+policy surprise series contains 286 monthly observations between January 2002 
+and October 2025. However, the available VSTOXX data cover only December 2012 
+to March 2025. Consequently, we construct a common estimation sample containing 
+only months for which all six predictors and the monetary policy surprise are 
+available. This ensures that the regression variables are aligned by calendar 
+month without artificially imputing unavailable historical observations. The 
+monthly macroeconomic predictors follow the lag formulas specified in the 
+assignment. Their strict real-time availability remains subject to verification
+of the original publication dates, particularly for ESI and HICP inflation.
+
+
+
+
+
+# **(iv) Describe the Predictors**. 
+
+Report summary statistics and the correlation matrix of the predictors. Are 
+any of them highly correlated (e.g. STOXX and VSTOXX changes)? What does that 
+imply for the individual t tests?
+
+
+## Summary Stats
+
+```{r}
+
+summary_stats <- t(sapply(
+  regression_data[, predictors],
+  function(x) c(
+    N = length(x),
+    Mean = mean(x),
+    SD = sd(x),
+    Min = min(x),
+    Max = max(x)
+  )
+))
+
+round(summary_stats, 3)
+
+correlation_matrix <- cor(regression_data[, predictors])
+round(correlation_matrix, 3)
+
+
+
+```
+
+# **(iv) Answer**
+
+Considering |r|>= 0.70 for high correlation, we conclude that none of the 
+predictor pairs are highly correlated. The largest absolute correlations are 
+between the two inflation measures (0.675) and between STOXX and VSTOXX changes 
+(−0.673), both just below the threshold. Although not highly correlated, these 
+can still increase standard errors and weaken t-statistics. 
+
+# **(v) Estimate the Regression**. 
+
+Regress $mps_t$ on a constant and $x_{t-1}$ by OLS. Report the estimates, 
+standard errors, t-stats, $R^2$, and adjusted $R^2$, and interpret the sign of 
+each coefficient (e.g. does a stock market rally before the meeting predict 
+a tightening surprise?).
+
+```{r}
+
+reg_data <- monthly_mps_2007 %>%
+  arrange(month_date) %>%
+  mutate(
+    lag_stoxx_3m = dplyr::lag(stoxx_3m, 1),
+    lag_vstoxx_3m = dplyr::lag(vstoxx_3m, 1),
+    lag_esi_3m = dplyr::lag(esi_3m, 1),
+    lag_inflation_3m = dplyr::lag(inflation_3m, 1),
+    lag_yield_pc2_3m = dplyr::lag(yield_pc2_3m, 1)
+  )
+
+mps_model <- lm(unstandardized ~ lag_stoxx_3m + lag_esi_3m + lag_inflation_3m + lag_yield_pc2_3m, data=reg_data)
+summary(mps_model)
+
+```
+
+# **(v) Answer**
+
+| Metric |  Estimates | Standard Error | T-Stat | P-Value |
+| ----- | ----- | ----- | ----- | ----- |
+| Intercept | -0.003306 | 0.183678 | -0.018 | 0.986 |
+| lag_stoxx_3m | -0.126226 | 2.384628 | -0.053 | 0.958 | 
+| lag_esi_3m | -0.002337|  0.030533 | -0.077 | 0.939 |
+| lag_inflation_3m  | 0.175668  |  0.224876   | 0.781 |   0.436| 
+| lag_yield_pc2_3m  | 0.573310  | 0.512988   |1.118 |    0.265| 
+
+ $R^2$: 0.01048, Adjusted $R^2$:  -0.008102 
+ 
+Both lags of STOXX and ESI are slightly negative meaning an increase in either
+lagged predictor corresponds to a 0.1262 & 0.002337 decrease change respectively 
+in mps.The lags of Inflation and the principal component of our yield curves are both
+positive meaning an increase in either lagged predictor corresponds to a 
+0.175668 & 0.573310 increase change respectively in mps.
+However with all covariates having extremely large p-values, we cannot
+conclude that any of these four have any statistically significant predictive 
+power for monetary policy tightening surprises.
+
+# **(vi) Check the Residuals**. 
+
+Plot the residuals and their ACF. Test for serial correlation (Ljung-Box, 
+Box.test; Breusch-Godfrey, lmtest::bgtest) and for heteroscedasticity 
+(Breush-Pagan, lmtest::bptest). State conclusion.
+
+## REsid Check
+
+```{r}
+
+lagged_ols_resid <- resid(mps_model)
+summary(lagged_ols_resid)
+
+par(mfrow = c(1,2))
+plot(lagged_ols_resid, type='l', main='OLS Residuals', ylab='Residuals')
+acf(lagged_ols_resid, main='ACF of Resid.')
+par(mfrow=c(1,1))
+
+cat('Ljung-Box Test')
+print(Box.test(lagged_ols_resid, type='Ljung-Box'))
+
+cat('Breusch-Godfrey Test')
+print(bgtest(mps_model))
+
+cat('Breusch-Pagan Test')
+print(bptest(mps_model))
+
+
+```
+
+# **(vi) Residual & Serial Correlation Testing**
+# **(vii) Inference with HAC Standard Errors**. 
+
+If the residuals show serial correlation or heteroscedasticity, re-estimate 
+the standard errors with the Newey-West estimator 
+(sandwich::NeweyWest, with the truncation lag stated, 
+e.g.: $L = [4(T/100)^{2/9}]$ Compare OLS and HAC standard errors.
+
+```{r}
+
+n_obs <- nobs(mps_model)
+L <- floor(4 * (n_obs / 100)^(2/9))
+cat('Calculate Truncated Lag (L): ', L, '\n')
+
+hac_vcov <- sandwich::NeweyWest(mps_model, lag = L, prewhite = FALSE)
+
+cat('OLS HAC Esimates')
+print(coeftest(mps_model))
+
+cat('\n NeweyWest HAC Estimates')
+print(coeftest(mps_model, vcov = hac_vcov))
+
+se_comparison <- data.frame(
+  OLS_SE = summary(mps_model)$coefficients[, 'Std. Error'],
+  HAC_SE = sqrt(diag(hac_vcov))
+)
+
+cat('\n Standard Error Comparison')
+print(se_comparison)
+
+```
+
+# **(vii) Answers**
+
+Wtih a truncated lag of 4, we applied the NeweyWest estimator 
+that attempts to correct the standard errors caused by the serial 
+correlation of the residuals of our OLS model. 
+
+Comparing the two models shows us two distinct behaviors:
+
+When comparing the standard errors, the NeweyWest HAC standard errors are
+smaller than the OLS estimators across the board. In the biggest drop off, 
+we can see the standard error of our lag stoxx variable drop from 
+2.38 to 1.76. 
+
+As the standard errors of the NeweyWest estimators dropped, the t-stats
+of each estimator increased in magnitude across the board as well. This
+drives us to the conclusion that we are still not able to reject the null 
+hypothesis for all variables despite our attempted correction. Even after 
+accounting for serial correlation within the residuals, none of the lagged
+predictors have statistically significant predictive power for predicting 
+monetary policy surprises.
+
+
+# **(viii) Test individual and joint significance**. 
+
+Test each ${\beta}_j = 0$ and the joint hypothesis $\beta = 0$ 
+(Wald test with the HAC covariance matrix, lmtest::waldtest or 
+car::linearHypothesis). Is the surprise predictable?
+
+```{r}
+
+joint_test <- linearHypothesis(
+  mps_model,
+  c('lag_stoxx_3m=0', 'lag_esi_3m=0', 'lag_inflation_3m=0', 'lag_yield_pc2_3m=0'),
+  vcov = hac_vcov
+)
+
+print(joint_test)
+
+```
+
+
+# **(viii) Answer**
+
+**Individual Hypotheses ${\beta_j}=0$**
+
+Based on the previous NeweyWest test, we failed to reject the null hypothesis
+for every single predictor. The p-values for all predictor are extremely large, 
+larger than our significance level of 5%. None of these lagged predictors are 
+different from 0.
+
+**Joint Hypothesis $\beta = 0$**
+
+When conducting our linearHypothesis, we yield another large p-value of 0.4784.
+This does not give us sufficient evidence to reject the null hypothesis. We can
+conclude that the variables do not have predictive power even when hypothesis 
+tested together as a group.
+
+The surprise is not predictable. Using this model, both the individual and joint
+tests conclude that the lagged predictors we used have no statistically significant
+power in predicting this event. These surprises, as the name states, are completely
+independent from the dataset we have chosen.
+
+# **(ix) Robustness Check**. 
+
+Re-estimate with 
+(a) different horizons for the market variables (1 day, 1 month),
+(b) only the months with an announcement (dropping the months with $mps_t = 0$), 
+(c) the yield-curve spread instead of PC2, and 
+(d) excluding the 2008-2009 crisis or the 2020 COVID period. Do the conclusions change?
+
+## (a)
+
+```{r}
+
+monthly_mps_2007$stoxx_1m <- vapply(
+  seq_len(nrow(monthly_mps_2007)),
+  function(i) past_change(stoxx_cleaned, cutoff=monthly_mps_2007$cutoff[i],
+                          val_col='close', h=21, log_change = TRUE),
+  numeric(1)
+)
+
+yield_levels <- yield_levels %>% mutate(spread = `10Y` - `2Y`)
+monthly_mps_2007$yield_spread_1m <- vapply(
+  seq_len(nrow(monthly_mps_2007)),
+  function(i) past_change(yield_levels, cutoff=monthly_mps_2007$cutoff[i],
+                          val_col = 'spread', h=21, log_change= FALSE),
+  numeric(1)
+)
+
+monthly_mps_2007$esi_1m <- vapply(
+  monthly_mps_2007$month_date,
+  function (d) { 
+    target <- as.Date(d)
+    m1 <- target %m-% months(1)
+    m2 <- target %m-% months(2)
+    x1 <- esi_cleaned[[esi_val_col]][match(m1, esi_cleaned$month_date)]
+    x2 <- esi_cleaned[[esi_val_col]][match(m2, esi_cleaned$month_date)]
+    
+    if (length(x1) == 0 || length(x2) == 0 || is.na(x1) || is.na(x2)) return(NA_real_)
+    as.numeric(x1 - x2)
+        },
+  numeric(1)
+)
+
+monthly_mps_2007$inflation_1m <- NA_real_
+    for (i in seq_len(nrow(monthly_mps_2007))) {
+      d <- as.Date(monthly_mps_2007$month_date[i])
+      m1 <- d %m-% months(1)
+      m2 <- d %m-% months(2)
+      
+      pi1 <- hicp_cleaned[[hicp_val_col]][match(m1, hicp_cleaned$month_date)]
+      pi2 <- hicp_cleaned[[hicp_val_col]][match(m2, hicp_cleaned$month_date)]
+      
+      if (length(pi1) > 0 && length(pi2) > 0 && !is.na(pi1) && !is.na(pi2)) {
+        monthly_mps_2007$inflation_1m[i] <- as.numeric(pi1- pi2)
+      }
+    }
+
+reg_data_1m <- monthly_mps_2007 %>%
+  arrange(month_date) %>%
+  mutate(
+    lag_stoxx_1m = lag(stoxx_1m, 1),
+    lag_esi_1m = lag(esi_1m, 1),
+    lag_inflation_1m = lag(inflation_1m, 1),
+    lag_yield_spread = lag(yield_spread_1m, 1)
+    ) %>%
+  filter(unstandardized != 0) %>%
+  filter(!format(as.Date(month_date), '%Y') %in% c('2008', '2009', '2020')) %>%
+  drop_na(unstandardized, lag_stoxx_1m, lag_esi_1m, lag_inflation_1m, lag_yield_spread)
+
+mps_model_1m <- lm(unstandardized ~ lag_stoxx_1m + lag_esi_1m + lag_inflation_1m + lag_yield_spread, data= reg_data_1m)
+
+T_obs_1m <- nobs(mps_model_1m)
+L_1m <- floor(4 * (T_obs_1m / 100)^(2/9))
+hac_vcov_1m <- sandwich::NeweyWest(mps_model_1m, lag = L_1m, prewhite=FALSE)
+
+se_comparison_1m <- data.frame(
+  OLS_SE_1_MONTH = summary(mps_model_1m)$coefficients[, 'Std. Error'],
+  HAC_SE_1_MONTH = sqrt(diag(hac_vcov_1m))
+)
+
+cat('\n Standard Error Comparison of 1 Month Horizon Models')
+print(se_comparison_1m)
+
+```
+
+After setting our time horizon to just 1 month, we ran the exact same NeweyWest 
+test to see how our estimators adjusted their standard errors.
+
+We see slightly different behavior to our 3 month horizon model as our standard
+errors actually increased. STOXX increased from 4.93 to 6.77 and the yield curve
+from 1.67 to 1.83. Our macroeconomic variables had their standard errors decrease,
+similar to our 3-month baseline model. 
+
+But as our standard errors for our financial variables increased, the t-statistics
+would theoretically increase their p-values, making their predictive power less
+statistically significant. This overall test reinforces our initial findings 
+that this set of predictors have no predictive power for monetary event shocks.
+
+## (b)
+
+
+```{r}
+
+reg_data_meetings_only <- reg_data %>%
+  filter(unstandardized != 0)
+
+model_meetings_only <- lm(unstandardized ~ lag_stoxx_3m + lag_esi_3m + lag_inflation_3m + lag_yield_pc2_3m, data=reg_data_meetings_only)
+
+T_obs_meetings_only <- nobs(model_meetings_only)
+L_meetings_only <- floor(4 * (T_obs_meetings_only / 100)^(2/9))
+hac_vcov_meetings_only <- sandwich::NeweyWest(model_meetings_only, lag=L_meetings_only, prewhite=FALSE)
+
+se_comparison_meetings_only <- data.frame(
+  OLS_SE_MEETINGS_ONLY = summary(model_meetings_only)$coefficients[, 'Std. Error'],
+  HAC_SE_1_MEETINGS_ONLY = sqrt(diag(hac_vcov_meetings_only))
+)
+
+cat('\n Standard Error Comparison of 1 Month Horizon Models')
+print(se_comparison_meetings_only)
+```
+
+After filtering out any instances without an accompanying meeting, we can see 
+yet again trivial differences in standard errors, but no real change to our
+overarching conclusions. The standard errors of the HAC model are smaller
+across the board when compared with the OLS model. But these differences are
+much smaller than observed in prior instances. This is induced by the sample
+size penalty of pruning any observation without a monetary meeting occurring 
+that month. We still conclude that our subset of predictors have no 
+statistically significant predictive power for monetary event surprises.
+
+## (c)
+
+```{r}
+
+yield_levels <- yield_levels %>% mutate(spread = `10Y` - `2Y`)
+monthly_mps_2007$yield_spread_3m <- vapply(
+  seq_len(nrow(monthly_mps_2007)),
+  function(i) past_change(yield_levels, cutoff=monthly_mps_2007$cutoff[i],
+                          val_col='spread', h=63, log_change=FALSE),
+  numeric(1)
+)
+
+reg_data_cd <- monthly_mps_2007 %>%
+  arrange(month_date) %>%
+  mutate(
+    lag_stoxx_3m = lag(stoxx_3m, 1),
+    lag_esi_3m = lag(esi_3m, 1),
+    lag_inflation_3m = lag(inflation_3m, 1),
+    lag_yield_spread_3m = lag(yield_spread_3m, 1)
+  ) %>% 
+  drop_na(unstandardized, lag_stoxx_3m, lag_esi_3m, lag_inflation_3m, lag_yield_spread_3m)
+
+model_cd <- lm(unstandardized ~ lag_stoxx_3m + lag_esi_3m + lag_inflation_3m + yield_spread_3m, data=reg_data_cd)
+T_obs_cd <- nobs(model_cd)
+L_cd <- floor(4 * (T_obs_cd / 100)^(2/9))
+hac_vcov_cd <- sandwich::NeweyWest(model_cd, lag=L_cd, prewhite=FALSE)
+
+print(coeftest(model_cd, vcov = hac_vcov_cd))
+
+```
+
+Results of HAC standard Errors still par for the course. All predictors have
+too large of p-values to be statistically significant. Swapping in the yield curve
+for PC2 yields no distinct change in predictive power. This test yet again 
+reinforces our initial findings that this set of predictors have no predictive
+power for monetary event shocks.
+
+## (d)
+
+```{r}
+
+reg_data_pruned <- monthly_mps_2007 %>%
+  arrange(month_date) %>%
+  mutate(
+    lag_stoxx_3m = lag(stoxx_3m, 1),
+    lag_esi_3m = lag(esi_3m, 1),
+    lag_inflation_3m = lag(inflation_3m, 1),
+    lag_yield_spread_3m = lag(yield_spread_3m, 1)
+  ) %>% 
+  drop_na(unstandardized, lag_stoxx_3m, lag_esi_3m, lag_inflation_3m, lag_yield_spread_3m) %>%
+  filter(!format(as.Date(month_date), '%Y') %in% c('2008', '2009', '2020')) %>%
+  drop_na(unstandardized, lag_stoxx_3m, lag_esi_3m, lag_inflation_3m, lag_yield_spread_3m)
+
+pruned_model <- lm(unstandardized ~ lag_stoxx_3m + lag_esi_3m + lag_inflation_3m + lag_yield_spread_3m, data=reg_data_pruned)
+
+T_obs_pruned <- nobs(pruned_model)
+L_pruned <- floor(4* T_obs_pruned / 100)^(2/9)
+hac_vcov_pruned <- sandwich::NeweyWest(pruned_model, lag=L_pruned, prewhite=FALSE)
+
+print(coeftest(pruned_model, vcov=hac_vcov_pruned))
+
+```
+
+Even after pruning out all years containing massive market crashes and rallies,
+p-values for all predictors remain too large for our significance level. From
+several of our robustness checks, our model cannot improve the predictability 
+of any of the predictors and thus cannot capture any inference to when a
+shock may occur after monetary events.
+
+# **(x) Interpret**. 
+
+What does predictability (or its absence) imply for using $mps_t$ as a monetary 
+policy shock? If it is predcitable, construct an 'orthogonalised' surprise as 
+the residual $\hat{u}_t$ from the regression, as Bauer and Swanson (2022) do, 
+and compare it with $mps_t$ in a plot. Compare your findings with those of 
+Bauer and Swanson for the U.S.
+
+
+
+
+
+
+
+
+
+
+
+
+
