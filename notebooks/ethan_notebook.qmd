@@ -1,0 +1,82 @@
+---
+title: 'time series part 2'
+author: 'me'
+format:
+    pdf:
+        toc: true
+        margins:
+        documentclass: article
+
+
+---
+
+
+# Time Series Proj. Part 2
+
+Testing whether the monetary polciy surprise $mps_t$ built in Part 1 can be **predicted** with information that was publicly availible *before* the ECB announcement.
+
+Each group regresses its **monthly** surprise on a constant and a vector of predictors measured before the annoucement:
+
+$mps_t = \alpha + β' z_{t-1} + u_t$, and tests whether the elements of $\beta$ are individualsly and jointly zero.
+
+$H0: \beta = 0$, the surprise cannot be predicted with information available before the announcement.
+
+$HA: \beta ≠ 0$
+
+
+Previously shown that US monetary policy surprises are correlated with macroeconomic and financial news released before the FOMC meeting.
+
+## Creation of the Monthly Surprise dependent variable: $mps_t$
+
+Start from the daily surprise of Part 1, one row per ECB announcement. Convert it to a monthly series by summing the daily surprises within each month.
+
+$mps_t = \sum_{d \in month:t} mps_d $
+
+Since 2002, there is at most one ME per month in almost all months, so the sum is usually just the value on the announcement day. Months wihtout an ECB announcement are kepy, with $mps_t = 0$, **CANNOT DROP**.
+
+With the sample of Part 1: Jan. 2002 to Oct. 2025, $T = 286$, report how many of them contain an announcement.
+
+
+# Predictors $z_{t-1}$
+
+**All predictors are changes measured stricly before the annoucement** so that they were known to market participants when the ECB announced its decision. Because months without an announcement are kept, every month t needs a *reference day* $r_t$.
+
+## $r_t$
+
++ in months without an announcement on day d: $r_t = d - 1$, the last trading day before the announcement.
++ in months wihtout an announcement: $r_t$ = last trading day of the month $t - 1$.
+
+A simpler alternative is to use the last trading day of the month $t-1$  as $r_t$ for *all* months: the definition is then the same for every month and still uses only information available beofre any announcement in month t, at the cost of ignoring news between the start of the month and the meeting. State which convention you use. In the table, $d - 1$ stands for $r_t$. The table gives the definition, the frequency, the source and how to download each variable.
+
+**Nota Bene**: only the ESI and inflation are Eurostat series, the equity, $\alpha$ and yield-curve data comes from STOXX and the ECB.
+
+## Dataset Query + Concat
+
+### What DF Needs
+
+| predictor | freq | where to get |
+| --------- | --------- | --------- |
+| STOXX | daily | EURO STOXX, Yahoo Finance ticker ^STOXX50E,  (R: quantmod::getSymbols) |
+| VSTOXX | daily | VSTOXX, symbol V2TX, stoxx.com |
+| ESI | monthly | Eurostat dataset teibs010 |
+| Inflation | monthly | eurostat ds prc_hicp_manr (all items CP00, euro area EA) |
+| Yield-Curve PC2 | daily | ECB data portal, dataset YC: AAA government bond spot rates, e.g. YC.B.U2.EUR.4F.G N A. SV C YM.SR 1Y (replace 1Y by 3M, 6M, 2Y, 5Y, 10Y, . . . ) |
+
+**Timing and look-ahead bias quick notes**
+
+
+
+A predictor is valid only if it was published before the announcement.
+
+
++ daily market data are observed every day: use the closing value of the day **before** the announcement, $d-1$, never the announcement day itself, $t$
++ the ESI for month $t$ is published at the end of month $t$, usually after the ECB meting.
+  + use $ESI_{t-1} - ESI_{t-4}$, the latest published value against three months earlier, or justify a diff. choice
++ the flash HICP for month $t-1$ is published at the end of the month or the start of the month t, before most ECB meetings, so $\pi_{t-1}$ is known at the time of the meeting.
+
+
+```{r}
+install.packages(c("eurostat", "ecb", "quantmod", "sandwich", "lmtest"))
+library(eurostat); library(ecb); library(quantmod)
+clean_eurostat_cache()
+```
