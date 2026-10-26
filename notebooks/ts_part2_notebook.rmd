@@ -416,7 +416,7 @@ yield_levels <- yield_levels[
   c('date', mats)
 ]
 
-head(monthly_mps_2007)
+monthly_mps_2007
 
 ```
 
@@ -643,10 +643,10 @@ round(correlation_matrix, 3)
 
 # **(iv) Answer**
 
-Considering |r|>= 0.70 for high correlation, we conclude that none of the 
+Considering |r|>= 0.60 for high correlation, we conclude that only VSTOXX and STOXX, of the 
 predictor pairs are highly correlated. The largest absolute correlations are 
 between the two inflation measures (0.675) and between STOXX and VSTOXX changes 
-(−0.673), both just below the threshold. Although not highly correlated, these 
+(−0.673), both just above the threshold. Although not extremely-highly correlated, these 
 can still increase standard errors and weaken t-statistics. 
 
 # **(v) Estimate the Regression**. 
@@ -668,7 +668,7 @@ reg_data <- monthly_mps_2007 %>%
     lag_yield_pc2_3m = dplyr::lag(yield_pc2_3m, 1)
   )
 
-mps_model <- lm(unstandardized ~ lag_stoxx_3m + lag_esi_3m + lag_inflation_3m + lag_yield_pc2_3m, data=reg_data)
+mps_model <- lm(unstandardized ~ lag_stoxx_3m + lag_vstoxx_3m + lag_esi_3m + lag_inflation_3m + lag_yield_pc2_3m, data=reg_data)
 summary(mps_model)
 
 ```
