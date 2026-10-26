@@ -2,10 +2,10 @@
 title: 'time series part 2'
 author: 'me'
 format:
-    pdf:
-        toc: true
-        margins:
-        documentclass: article
+  pdf:
+    toc: true
+    geometry: "margin=1in"
+    documentclass: article
 ---
 
 # **ENV SETUP IMPORTANT TO RUN ONCE**
@@ -13,13 +13,13 @@ format:
 **needs v2tx.csv file in working directory to import properly**
 
 ```{r}
-install.packages(c("eurostat", "ecb", "quantmod", "sandwich", "lmtest", 'readr', 'patchwork', 'car'))
-install.packages(
-  c("dplyr", "tidyr", "lubridate"),
-  repos = "https://cloud.r-project.org"
-)
+#install.packages(c("eurostat", "ecb", "quantmod", "sandwich", "lmtest", 'readr', 'readxl', 'patchwork', 'car'))
+#install.packages(
+#  c("dplyr", "tidyr", "lubridate"),
+#  repos = "https://cloud.r-project.org"
+#)
 
-library(car); library(lmtest); library(ggplot2); library(patchwork); library(eurostat); library(ecb); library(quantmod); library(dplyr); library(tidyr); library(lubridate); library(eurostat); library(patchwork); library(readr); clean_eurostat_cache()
+library(readxl);library(car); library(lmtest); library(ggplot2); library(patchwork); library(eurostat); library(ecb); library(quantmod); library(dplyr); library(tidyr); library(lubridate); library(eurostat); library(patchwork); library(readr); clean_eurostat_cache()
 ```
 
 
@@ -27,7 +27,7 @@ library(car); library(lmtest); library(ggplot2); library(patchwork); library(eur
 
 
 ```{r}
-mps <- read.csv("../mps.csv")
+mps <- read.csv("../data/mps.csv")
 
 monthly_mps <- mps %>%
   mutate(month = floor_date(as.Date(date), "month")) %>%
@@ -103,11 +103,9 @@ mats <- c("3M", "6M", "1Y", "2Y", "5Y", "10Y")
 yc <- lapply(mats, function(m)
 get_data(paste0("YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_", m)))
 
-# stoxx read
-getSymbols("^STOXX50E", from = "2001-09-01", src = "yahoo")
-stoxx <- data.frame(date = index(STOXX50E),
-close = as.numeric(Cl(STOXX50E)))
 
+# stoxx read
+stoxx <- read_excel('../data/full_stoxx.xlsx', sheet = 'STOXX 50 daily data')
 
 # vstoxx read
 vstoxx_cleaned <- read_delim('h_v2tx.csv', delim = ';', show_col_types = FALSE) %>%
@@ -124,6 +122,9 @@ last_before <- function(dates, values, d) values[max(which(dates < d))]
 ## DATA CLEANING
 
 ```{r}
+
+library(janitor)
+
 
 hicp_cleaned <- hicp %>%
   mutate(date = if ('time' %in% names(.)) as.Date(time) else as.Date(TIME_PERIOD)) %>%
@@ -147,7 +148,10 @@ yc_df <- bind_rows(lapply(names(yc), function(x) {
     filter(!is.na(obsvalue))
 
 stoxx_cleaned <- stoxx %>%
-  mutate(date = as.Date(date)) %>%
+  rename_with(tolower) %>%
+  mutate(
+    date = as.Date(date),
+    close = as.numeric(close)) %>%                       
   filter(!is.na(date), !is.na(close)) %>%
   select(date, close) %>%
   arrange(date)
@@ -261,18 +265,6 @@ We plot the original series in levels to examine their historical behaviour befo
 All analysis is restricted to the January 2002–October 2025 project period, subject to the historical availability of each dataset
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 #  **(iii) Construct $z_{t-1}$**. 
 Compute the changes defined in Section 2.2 relative to the reference day $r_t$ 
 of each month. Explain how you deal with weekends and holidays 
@@ -324,16 +316,13 @@ past_change <- function(data, cutoff, val_col = 'value', h = 63, log_change = FA
 
 ```{r}
 
-monthly_mps_2007 <- monthly_mps %>%
-  filter(month_date >= as.Date("2007-08-01"))
 
-
-monthly_mps_2007$stoxx_3m <- vapply(
-  seq_len(nrow(monthly_mps_2007)),
+monthly_mps$stoxx_3m <- vapply(
+  seq_len(nrow(monthly_mps)),
   function(i) {
     past_change(
       stoxx_cleaned,
-      cutoff     = monthly_mps_2007$cutoff[i],
+      cutoff     = monthly_mps$cutoff[i],
       val_col    = "close",
       h          = 63,
       log_change = TRUE
@@ -342,12 +331,12 @@ monthly_mps_2007$stoxx_3m <- vapply(
   numeric(1)
 )
 
-monthly_mps_2007$vstoxx_3m <- vapply(
-  seq_len(nrow(monthly_mps_2007)),
+monthly_mps$vstoxx_3m <- vapply(
+  seq_len(nrow(monthly_mps)),
   function(i) {
     past_change(
       vstoxx_cleaned,
-      cutoff     = monthly_mps_2007$cutoff[i],
+      cutoff     = monthly_mps$cutoff[i],
       val_col    = "level",
       h          = 63,
       log_change = FALSE
@@ -362,8 +351,8 @@ hicp_cleaned$month_date <- floor_date(as.Date(hicp_cleaned$date), 'month')
 esi_val_col <- if ('esi' %in% names(esi_cleaned)) 'esi' else 'values'
 hicp_val_col <- if ('values' %in% names(hicp_cleaned)) 'values' else 'value'
 
-monthly_mps_2007$esi_3m <- vapply(
-  monthly_mps_2007$month_date,
+monthly_mps$esi_3m <- vapply(
+  monthly_mps$month_date,
   function(d) {
     target <- as.Date(d)
     m1 <- target %m-% months(1)
@@ -380,11 +369,11 @@ monthly_mps_2007$esi_3m <- vapply(
   numeric(1)
 )
 
-monthly_mps_2007$inflation_3m <- NA_real_
-monthly_mps_2007$inflation_1y <- NA_real_
+monthly_mps$inflation_3m <- NA_real_
+monthly_mps$inflation_1y <- NA_real_
 
-for (i in seq_len(nrow(monthly_mps_2007))) {
-  d <- as.Date(monthly_mps_2007$month_date[i])
+for (i in seq_len(nrow(monthly_mps))) {
+  d <- as.Date(monthly_mps$month_date[i])
   
   m1 <- d %m-% months(1)
   m4 <- d %m-% months(4)
@@ -395,11 +384,11 @@ for (i in seq_len(nrow(monthly_mps_2007))) {
   pi13 <- hicp_cleaned[[hicp_val_col]][match(m13, hicp_cleaned$month_date)]
   
   if (length(pi1) > 0 && length(pi4) > 0 && !is.na(pi1) && !is.na(pi4)) {
-    monthly_mps_2007$inflation_3m[i] <- as.numeric(pi1-pi4)
+    monthly_mps$inflation_3m[i] <- as.numeric(pi1-pi4)
   }
   
   if (length(pi1) > 0 && length(pi13) > 0 && !is.na(pi1) && !is.na(pi13)) {
-    monthly_mps_2007$inflation_1y[i] <- as.numeric(pi1 - pi13)
+    monthly_mps$inflation_1y[i] <- as.numeric(pi1 - pi13)
   }
 }
 
@@ -416,7 +405,7 @@ yield_levels <- yield_levels[
   c('date', mats)
 ]
 
-monthly_mps_2007
+monthly_mps
 
 ```
 
@@ -472,18 +461,19 @@ pc2_daily <- data.frame(
   value = yield_levels$pc2
 )
 
-monthly_mps_2007$yield_pc2_3m <- vapply(
-  seq_len(nrow(monthly_mps_2007)),
+monthly_mps$yield_pc2_3m <- vapply(
+  seq_len(nrow(monthly_mps)),
   function(i) {
     past_change(
       pc2_daily,
-      cutoff = monthly_mps_2007$cutoff[i],
+      cutoff = monthly_mps$cutoff[i],
       h = 63,
       log_change = FALSE
     )
   },
   numeric(1)
 )
+
 
 ```
 
@@ -503,21 +493,21 @@ predictors <- c(
 )
 
 # Check the column names
-names(monthly_mps_2007)
+names(monthly_mps)
 
 # Count valid observations for each predictor
 colSums(
-  !is.na(monthly_mps_2007[, predictors])
+  !is.na(monthly_mps[, predictors])
 )
 
 # Count missing observations
 colSums(
-  is.na(monthly_mps_2007[, predictors])
+  is.na(monthly_mps[, predictors])
 )
 
 # Check the first observations
 head(
-  monthly_mps_2007[, c(
+  monthly_mps[, c(
     "month_date",
     "unstandardized",
     predictors
@@ -525,9 +515,9 @@ head(
 )
 
 # COMMON SAMPLE FOR ALL PREDICTORS
-regression_data <- monthly_mps_2007[
+regression_data <- monthly_mps[
   complete.cases(  #retains only months for which every predictor and the monetary policy surprise have a valid observation
-    monthly_mps_2007[, c(
+    monthly_mps[, c(
       "unstandardized",
       predictors
     )]
@@ -557,8 +547,8 @@ data.frame(
     predictors
   ),
   Valid_Months = c(
-    sum(!is.na(monthly_mps_2007$unstandardized)),
-    colSums(!is.na(monthly_mps_2007[, predictors]))
+    sum(!is.na(monthly_mps$unstandardized)),
+    colSums(!is.na(monthly_mps[, predictors]))
   )
 )
 
@@ -658,7 +648,7 @@ a tightening surprise?).
 
 ```{r}
 
-reg_data <- monthly_mps_2007 %>%
+reg_data <- monthly_mps %>%
   arrange(month_date) %>%
   mutate(
     lag_stoxx_3m = dplyr::lag(stoxx_3m, 1),
@@ -830,23 +820,23 @@ Re-estimate with
 
 ```{r}
 
-monthly_mps_2007$stoxx_1m <- vapply(
-  seq_len(nrow(monthly_mps_2007)),
-  function(i) past_change(stoxx_cleaned, cutoff=monthly_mps_2007$cutoff[i],
+monthly_mps$stoxx_1m <- vapply(
+  seq_len(nrow(monthly_mps)),
+  function(i) past_change(stoxx_cleaned, cutoff=monthly_mps$cutoff[i],
                           val_col='close', h=21, log_change = TRUE),
   numeric(1)
 )
 
 yield_levels <- yield_levels %>% mutate(spread = `10Y` - `2Y`)
-monthly_mps_2007$yield_spread_1m <- vapply(
-  seq_len(nrow(monthly_mps_2007)),
-  function(i) past_change(yield_levels, cutoff=monthly_mps_2007$cutoff[i],
+monthly_mps$yield_spread_1m <- vapply(
+  seq_len(nrow(monthly_mps)),
+  function(i) past_change(yield_levels, cutoff=monthly_mps$cutoff[i],
                           val_col = 'spread', h=21, log_change= FALSE),
   numeric(1)
 )
 
-monthly_mps_2007$esi_1m <- vapply(
-  monthly_mps_2007$month_date,
+monthly_mps$esi_1m <- vapply(
+  monthly_mps$month_date,
   function (d) { 
     target <- as.Date(d)
     m1 <- target %m-% months(1)
@@ -860,9 +850,9 @@ monthly_mps_2007$esi_1m <- vapply(
   numeric(1)
 )
 
-monthly_mps_2007$inflation_1m <- NA_real_
-    for (i in seq_len(nrow(monthly_mps_2007))) {
-      d <- as.Date(monthly_mps_2007$month_date[i])
+monthly_mps$inflation_1m <- NA_real_
+    for (i in seq_len(nrow(monthly_mps))) {
+      d <- as.Date(monthly_mps$month_date[i])
       m1 <- d %m-% months(1)
       m2 <- d %m-% months(2)
       
@@ -870,11 +860,11 @@ monthly_mps_2007$inflation_1m <- NA_real_
       pi2 <- hicp_cleaned[[hicp_val_col]][match(m2, hicp_cleaned$month_date)]
       
       if (length(pi1) > 0 && length(pi2) > 0 && !is.na(pi1) && !is.na(pi2)) {
-        monthly_mps_2007$inflation_1m[i] <- as.numeric(pi1- pi2)
+        monthly_mps$inflation_1m[i] <- as.numeric(pi1- pi2)
       }
     }
 
-reg_data_1m <- monthly_mps_2007 %>%
+reg_data_1m <- monthly_mps %>%
   arrange(month_date) %>%
   mutate(
     lag_stoxx_1m = lag(stoxx_1m, 1),
@@ -952,14 +942,14 @@ statistically significant predictive power for monetary event surprises.
 ```{r}
 
 yield_levels <- yield_levels %>% mutate(spread = `10Y` - `2Y`)
-monthly_mps_2007$yield_spread_3m <- vapply(
-  seq_len(nrow(monthly_mps_2007)),
-  function(i) past_change(yield_levels, cutoff=monthly_mps_2007$cutoff[i],
+monthly_mps$yield_spread_3m <- vapply(
+  seq_len(nrow(monthly_mps)),
+  function(i) past_change(yield_levels, cutoff=monthly_mps$cutoff[i],
                           val_col='spread', h=63, log_change=FALSE),
   numeric(1)
 )
 
-reg_data_cd <- monthly_mps_2007 %>%
+reg_data_cd <- monthly_mps %>%
   arrange(month_date) %>%
   mutate(
     lag_stoxx_3m = lag(stoxx_3m, 1),
@@ -988,7 +978,7 @@ power for monetary event shocks.
 
 ```{r}
 
-reg_data_pruned <- monthly_mps_2007 %>%
+reg_data_pruned <- monthly_mps %>%
   arrange(month_date) %>%
   mutate(
     lag_stoxx_3m = lag(stoxx_3m, 1),
